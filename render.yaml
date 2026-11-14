@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: project-5-nhom-11
+    runtime: python
+    plan: free
+    buildCommand: pip install --no-cache-dir torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu && pip install --no-cache-dir -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 2 --timeout 120
+    healthCheckPath: /api/status
+    envVars:
+      - key: TRAIN_IF_MISSING
+        value: "0"
