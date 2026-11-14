@@ -1,6 +1,8 @@
 """Web demo cho dự án gki_AI: python app.py  ->  http://localhost:5000"""
-import os, threading
+import os, traceback
+os.environ.setdefault("MPLBACKEND", "Agg")
 import numpy as np, torch
+torch.set_num_threads(1)  # Limit CPU threads on Render Free
 from flask import Flask, request, jsonify, send_from_directory
 import backend
 backend.use_graphics = False          # tắt matplotlib khi chạy web
@@ -10,7 +12,7 @@ from train import train_perceptron, train_regression, train_digitclassifier, tra
 app = Flask(__name__, static_folder="static")
 W = os.path.join(os.path.dirname(__file__), "weights")
 os.makedirs(W, exist_ok=True)
-MODELS, STATUS, LOCK = {}, {}, threading.Lock()
+MODELS, STATUS = {}, {}
 
 # Tạo dataset *chỉ khi thật sự cần huấn luyện* để tiết kiệm RAM trên hosting.
 def _build(name):
@@ -22,10 +24,12 @@ def _build(name):
 def load_or_train(name):
     STATUS[name] = "loading"
     try:
-        model, dataset_class, train_func = _build(name)
         path = os.path.join(W, name + ".pt")
-        if os.path.exists(path):
-            # Máy chủ Render chỉ chạy CPU, không cần mở dữ liệu huấn luyện MNIST.
+        print(f"[DEPLOY] Bắt đầu tải {name}: {path}", flush=True)
+        model, dataset_class, train_func = _build(name)
+        if os.path.isfile(path):
+            print(f"[DEPLOY] Đã tìm thấy {name}.pt ({os.path.getsize(path)} bytes)", flush=True)
+            # Tải trọng số trên CPU, không tải dữ liệu MNIST khi chỉ dự đoán.
             model.load_state_dict(torch.load(path, map_location="cpu", weights_only=True))
         elif os.environ.get("TRAIN_IF_MISSING", "1") == "1":
             STATUS[name] = "training"
@@ -39,17 +43,21 @@ def load_or_train(name):
         model.eval()
         MODELS[name] = model
         STATUS[name] = "ready"
+        print(f"[DEPLOY] {name}: READY", flush=True)
     except Exception as exc:
         STATUS[name] = "error"
         print(f"[DEPLOY] Lỗi tải {name}: {exc}", flush=True)
+        traceback.print_exc()
 
 def boot():
     for name in ("digit", "reg", "lang"):
         load_or_train(name)
 
-for name in ("digit", "reg", "lang"):
-    STATUS[name] = "loading"
-threading.Thread(target=boot, daemon=True).start()
+# Load checkpoints synchronously in Gunicorn worker instead of a daemon thread.
+# This avoids returning a "live" website whose model loader never progresses.
+# The tiny checkpoint files should load quickly, and failures are visible in Logs.
+boot()
+print(f"[DEPLOY] Hoàn tất khởi tạo: {STATUS}", flush=True)
 
 def need(name):
     state = STATUS.get(name)
